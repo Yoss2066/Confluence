@@ -276,6 +276,7 @@
       </div>
       <div>
         <button class="btn-ghost" id="notifyBtn">🔔 Enable Setup Alerts (rotating pairs)</button>
+        <button class="btn-ghost" id="testNotifyBtn" style="margin-top:6px;">🔔 Send Test Notification</button>
         <div style="font-size:10px; color:var(--ink-faint); margin-top:5px; line-height:1.5;">Notifies you the moment any pair's turn in the rotation shows a clean setup, 7AM–10PM.</div>
       </div>
       <div style="font-size:10.5px; color:var(--ink-faint); line-height:1.6;">
@@ -650,6 +651,14 @@ document.getElementById('notifyBtn').addEventListener('click', async ()=>{
     alert('Notifications were blocked. Enable them in your browser\'s site settings to use this feature.');
   }
 });
+document.getElementById('testNotifyBtn').addEventListener('click', async ()=>{
+  if(!('Notification' in window)){ alert('This browser does not support notifications at all.'); return; }
+  if(Notification.permission !== 'granted'){
+    alert(`Permission is currently "${Notification.permission}" — tap "Enable Setup Alerts" first and allow the prompt.`);
+    return;
+  }
+  new Notification('Test notification', { body: 'If you see this, notifications are working correctly on this device/browser.' });
+});
 document.getElementById('sidebarToggleBtn').addEventListener('click', ()=>{
   document.querySelector('.sidebar').classList.toggle('collapsed');
 });
@@ -847,7 +856,7 @@ function generateSignal(candles){
 
   if(confluences.length < 3){
     return { bias:'neutral', valid:false, currentPrice, confluences, obs:displayObs, fvgs:displayFvgs,
-      reasoning:[`Only ${confluences.length} of 6 checks lined up — not enough agreement for a confident 1:3+ setup.`,'Waiting here avoids taking a low-quality trade just to have something to do.'] };
+      reasoning:[`Only ${confluences.length} of 6 checks lined up — not enough agreement for a confident setup.`,'Waiting here avoids taking a low-quality trade just to have something to do.'] };
   }
 
   // Tight stop: sit just beyond the real invalidation point (sweep wick or OB/FVG edge), buffered by a small fraction of recent volatility (ATR-style), not a wide padding.
@@ -860,22 +869,20 @@ function generateSignal(candles){
     : Math.max(entryZone.top, sweepLevel ?? entryZone.top) + tightBuffer;
 
   const risk = Math.abs(entry-sl) || currentPrice*0.001;
-  const MIN_RR = 3;
 
-  // Look for the nearest REAL liquidity pool (opposing swing) that clears the minimum R:R, preferring real structure over synthetic extension.
+  // Target the real next liquidity pool in this direction — no artificial reward stretching.
   const oppSwings = (bias==='bullish'
     ? swings.filter(s=>s.type==='high' && s.price>currentPrice)
     : swings.filter(s=>s.type==='low'  && s.price<currentPrice)
   ).sort((a,b)=> Math.abs(a.price-currentPrice) - Math.abs(b.price-currentPrice));
 
-  let tp = null;
-  for(const s of oppSwings){
-    const reward = Math.abs(s.price-entry);
-    if(reward/risk >= MIN_RR){ tp = s.price; confluences.push('Target is a real prior high/low, and reward is at least 3x the risk'); break; }
-  }
-  if(tp === null){
-    tp = bias==='bullish' ? entry + risk*MIN_RR : entry - risk*MIN_RR;
-    confluences.push('No obvious target was far enough away, so take-profit was stretched to keep a 3x reward — watch this one closely and consider banking partial profit early');
+  let tp;
+  if(oppSwings.length){
+    tp = oppSwings[0].price;
+    confluences.push('Take-profit targets the next real liquidity pool in this direction');
+  } else {
+    tp = bias==='bullish' ? entry + risk*2 : entry - risk*2;
+    confluences.push('No clear liquidity pool ahead yet — using a default 1:2 target; manage this one manually');
   }
 
   const reward = Math.abs(tp-entry);
