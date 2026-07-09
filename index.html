@@ -358,6 +358,21 @@
 
 <script>
 const PAIRS = ['XAU/USD','GBP/USD','EUR/USD','USD/JPY','AUD/USD','GBP/JPY','NZD/USD'];
+
+// ---------- Notifications (Android Chrome blocks `new Notification()` directly — must go through a Service Worker) ----------
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(e => console.error('Service worker registration failed:', e));
+}
+async function fireNotification(title, options){
+  try{
+    if('serviceWorker' in navigator){
+      const reg = await navigator.serviceWorker.ready;
+      await reg.showNotification(title, options);
+      return;
+    }
+  }catch(e){ /* fall through to the older API below */ }
+  try{ new Notification(title, options); }catch(e){ console.error('Notification failed on this browser:', e); }
+}
 let state = {
   pair: 'EUR/USD',
   timeframe: '1h',
@@ -645,7 +660,7 @@ document.getElementById('notifyBtn').addEventListener('click', async ()=>{
     document.getElementById('notifyBtn').textContent = '🔔 Setup Alerts: On';
     document.getElementById('notifyBtn').style.color = 'var(--bull)';
     document.getElementById('notifyBtn').style.borderColor = 'var(--bull-dim)';
-    new Notification('Confluence alerts enabled', { body: 'You\'ll be notified when any pair in the rotation gets a clean setup.' });
+    fireNotification('Confluence alerts enabled', { body: 'You\'ll be notified when any pair in the rotation gets a clean setup.' });
   } else {
     state.notificationsEnabled = false;
     alert('Notifications were blocked. Enable them in your browser\'s site settings to use this feature.');
@@ -657,7 +672,7 @@ document.getElementById('testNotifyBtn').addEventListener('click', async ()=>{
     alert(`Permission is currently "${Notification.permission}" — tap "Enable Setup Alerts" first and allow the prompt.`);
     return;
   }
-  new Notification('Test notification', { body: 'If you see this, notifications are working correctly on this device/browser.' });
+  fireNotification('Test notification', { body: 'If you see this, notifications are working correctly on this device/browser.' });
 });
 document.getElementById('sidebarToggleBtn').addEventListener('click', ()=>{
   document.querySelector('.sidebar').classList.toggle('collapsed');
@@ -1064,7 +1079,7 @@ function handleNewSignal(pair, sig){
   logToJournal(pair, sig);
 
   if(state.notificationsEnabled && 'Notification' in window && Notification.permission === 'granted'){
-    new Notification(`Clean setup: ${pair}`, {
+    fireNotification(`Clean setup: ${pair}`, {
       body: `${sig.bias === 'bullish' ? 'LONG' : 'SHORT'} · entry ${fmt(sig.entry,pair)} · SL ${fmt(sig.sl,pair)} · TP ${fmt(sig.tp,pair)} · 1:${sig.rr.toFixed(1)}`
     });
   }
