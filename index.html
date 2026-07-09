@@ -258,19 +258,25 @@
       </div>
 
       <div>
-        <span class="field-label">Twelve Data API Key</span>
+        <span class="field-label">Twelve Data API Key (primary)</span>
         <input type="password" id="apiKeyInput" placeholder="Paste free API key" />
         <div class="key-status" id="keyStatus">No key saved yet — get a free one at twelvedata.com</div>
       </div>
 
+      <div>
+        <span class="field-label">Twelve Data API Key (second account)</span>
+        <input type="password" id="apiKeyInput2" placeholder="Paste second free API key" />
+        <div class="key-status" id="keyStatus2">Optional — adds a second 800/day budget, alternated automatically</div>
+      </div>
+
       <button class="btn" id="analyzeBtn">Run Analysis</button>
       <div>
-        <div class="btn-ghost" id="autoBtn" style="cursor:default; color:var(--bull); border-color:var(--bull-dim);">● Auto-refresh: On (rotating, 1 min apart, 8AM–6PM)</div>
-        <div style="font-size:10px; color:var(--ink-faint); margin-top:5px; line-height:1.5;">Only runs 8AM–6PM Addis Ababa time — concentrating the 800/day free budget into your actual trading hours instead of spreading it over 24h. 7 pairs, 1 min apart — each pair rechecked every ~7 min during that window; paused outside it. The chart switches automatically as it rotates.</div>
+        <div class="btn-ghost" id="autoBtn" style="cursor:default; color:var(--bull); border-color:var(--bull-dim);">● Auto-refresh: On (rotating, 36s apart, 7AM–10PM)</div>
+        <div style="font-size:10px; color:var(--ink-faint); margin-top:5px; line-height:1.5;">Runs 7AM–10PM Addis Ababa time (~1,500/day using both keys, leaving buffer). 7 pairs, 36 sec apart — each pair rechecked every ~4.2 min during that window; paused outside it. The chart switches automatically as it rotates.</div>
       </div>
       <div>
         <button class="btn-ghost" id="notifyBtn">🔔 Enable Setup Alerts (rotating pairs)</button>
-        <div style="font-size:10px; color:var(--ink-faint); margin-top:5px; line-height:1.5;">Notifies you the moment any pair's turn in the rotation shows a clean setup, 8AM–6PM.</div>
+        <div style="font-size:10px; color:var(--ink-faint); margin-top:5px; line-height:1.5;">Notifies you the moment any pair's turn in the rotation shows a clean setup, 7AM–10PM.</div>
       </div>
       <div style="font-size:10.5px; color:var(--ink-faint); line-height:1.6;">
         Your key is stored only in your browser — never sent anywhere except directly to Twelve Data.
@@ -355,6 +361,8 @@ let state = {
   pair: 'EUR/USD',
   timeframe: '1h',
   apiKey: null,
+  apiKey2: null,
+  keyRotation: 0,
   autoRefresh: true,
   autoTimer: null,
   chart: null,
@@ -572,6 +580,13 @@ async function loadKeys(){
     document.getElementById('apiKeyInput').value = td;
     setKeyStatus('keyStatus', true, 'twelvedata.com');
   }
+  const td2 = await getStored('twelvedata_api_key_2');
+  if(td2){
+    state.apiKey2 = td2;
+    document.getElementById('apiKeyInput2').value = td2;
+    document.getElementById('keyStatus2').textContent = 'Second key saved — dual-key rotation active.';
+    document.getElementById('keyStatus2').classList.add('ok');
+  }
 }
 async function saveKey(storageKey, value){
   await setStored(storageKey, value);
@@ -612,6 +627,15 @@ document.getElementById('apiKeyInput').addEventListener('change', e=>{
   const v = e.target.value.trim();
   if(v){ state.apiKey = v; setKeyStatus('keyStatus', true, 'twelvedata.com'); saveKey('twelvedata_api_key', v); runAnalysis(); startAutoRefresh(); }
 });
+document.getElementById('apiKeyInput2').addEventListener('change', e=>{
+  const v = e.target.value.trim();
+  if(v){
+    state.apiKey2 = v;
+    saveKey('twelvedata_api_key_2', v);
+    document.getElementById('keyStatus2').textContent = 'Second key saved — dual-key rotation active.';
+    document.getElementById('keyStatus2').classList.add('ok');
+  }
+});
 document.getElementById('notifyBtn').addEventListener('click', async ()=>{
   if(!('Notification' in window)){ alert('Your browser does not support notifications.'); return; }
   const perm = await Notification.requestPermission();
@@ -637,9 +661,17 @@ document.getElementById('fullscreenBtn').addEventListener('click', ()=>{
 document.getElementById('analyzeBtn').addEventListener('click', runAnalysis);
 
 // ---------- Data fetch ----------
+function nextApiKey(){
+  if(!state.apiKey) return null;
+  if(!state.apiKey2) return state.apiKey;
+  const key = (state.keyRotation % 2 === 0) ? state.apiKey : state.apiKey2;
+  state.keyRotation++;
+  return key;
+}
 async function fetchCandles(pair, interval){
-  if(!state.apiKey) throw new Error('No API key saved. Paste your free Twelve Data key on the left.');
-  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(pair)}&interval=${interval}&outputsize=500&apikey=${state.apiKey}`;
+  const key = nextApiKey();
+  if(!key) throw new Error('No API key saved. Paste your free Twelve Data key on the left.');
+  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(pair)}&interval=${interval}&outputsize=500&apikey=${key}`;
   let res;
   try{
     res = await fetch(url);
@@ -986,15 +1018,23 @@ async function runAnalysis(){
 function isActiveHours(){
   const now = new Date();
   const eatHour = (now.getUTCHours() + 3) % 24; // Ethiopia is fixed UTC+3, no DST
-  return eatHour >= 8 && eatHour < 18;
+  return eatHour >= 7 && eatHour < 22;
 }
 function rotateAndAnalyze(){
   const btn = document.getElementById('autoBtn');
   if(!isActiveHours()){
-    btn.textContent = '⏸ Paused — outside 8AM–6PM Addis Ababa hours';
+    btn.textContent = '⏸ Paused — outside 7AM–10PM Addis Ababa hours';
     return;
   }
-  btn.textContent = '● Auto-refresh: On (rotating, 1 min apart, 8AM–6PM)';
+  if(!state.apiKey2){
+    // Only one key present: 36s would blow through 800/day in ~8h, so auto-throttle to ~1 in 3 ticks (~108s effective gap, ~500/day — safe on a single key).
+    state.singleKeyTickSkip = (state.singleKeyTickSkip || 0) + 1;
+    if(state.singleKeyTickSkip % 3 !== 0){
+      btn.textContent = '● Auto-refresh: On (single key — throttled to protect 800/day)';
+      return;
+    }
+  }
+  btn.textContent = '● Auto-refresh: On (rotating, 36s apart, 7AM–10PM)';
   state.pair = PAIRS[state.rotationIndex % PAIRS.length];
   state.rotationIndex++;
   buildPairGrid();
@@ -1004,7 +1044,7 @@ function rotateAndAnalyze(){
 function startAutoRefresh(){
   if(state.autoTimer) clearInterval(state.autoTimer);
   state.autoRefresh = true;
-  state.autoTimer = setInterval(rotateAndAnalyze, 60000);
+  state.autoTimer = setInterval(rotateAndAnalyze, 36000);
 }
 
 // ---------- Shared: journal logging + notification on any new clean setup ----------
