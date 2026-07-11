@@ -1008,30 +1008,36 @@ function renderSignal(sig, pair){
 // ---------- Orchestration ----------
 async function runAnalysis(){
   const btn = document.getElementById('analyzeBtn');
+  const pair = state.pair; // capture once — prevents the rotation timer from changing this mid-flight and mislabeling the result
   btn.disabled = true; btn.textContent = 'Analyzing…';
   document.getElementById('signalContent').innerHTML = '<div class="loading">Pulling live candles and running structure analysis…</div>';
 
   try{
-    const candles = await fetchCandles(state.pair, state.timeframe);
+    const candles = await fetchCandles(pair, state.timeframe);
     if(candles.length < 30) throw new Error('Not enough candle history returned to analyze reliably.');
 
     const sig = generateSignal(candles);
     let srLevels = [];
     let higherData = null;
     try{
-      higherData = await getHigherTFCandles(state.pair, state.timeframe, candles);
+      higherData = await getHigherTFCandles(pair, state.timeframe, candles);
       srLevels = computeSRLevels(higherData);
       augmentWithTopDown(sig, higherData, srLevels);
     }catch(e){ /* S/R + top-down overlay is best-effort; don't block the main signal on it */ }
-    updateChart(candles, state.timeframe, sig, state.pair, srLevels);
-    renderSignal(sig, state.pair);
+
+    if(pair !== state.pair) return; // the rotation moved on while this was in flight — discard instead of showing/logging a stale mismatch
+
+    updateChart(candles, state.timeframe, sig, pair, srLevels);
+    renderSignal(sig, pair);
     renderStructure(sig.structureEvents);
     renderCalendarWidget();
-    handleNewSignal(state.pair, sig);
+    handleNewSignal(pair, sig);
     document.getElementById('lastUpdated').textContent = '· updated ' + new Date().toLocaleTimeString();
 
   }catch(err){
-    document.getElementById('signalContent').innerHTML = `<div class="error-box">${err.message}</div>`;
+    if(pair === state.pair){
+      document.getElementById('signalContent').innerHTML = `<div class="error-box">${err.message}</div>`;
+    }
   } finally {
     btn.disabled = false; btn.textContent = 'Run Analysis';
   }
