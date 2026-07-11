@@ -193,7 +193,7 @@ def generate_signal(candles):
 # ---------- Notification via ntfy.sh (no account needed) ----------
 def notify(title, message):
     if not NTFY_TOPIC:
-        print("No NTFY_TOPIC set — would have sent:", title, message)
+        print("No NTFY_TOPIC set — would have sent:", title, message, flush=True)
         return
     url = f"https://ntfy.sh/{NTFY_TOPIC}"
     req = urllib.request.Request(
@@ -204,7 +204,7 @@ def notify(title, message):
     try:
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
-        print("ntfy send failed:", e)
+        print("ntfy send failed:", e, flush=True)
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -215,11 +215,14 @@ def save_state(state):
     with open(STATE_FILE, "w") as f: json.dump(state, f)
 
 def main():
+    print(f"Scanner started at {datetime.now(timezone.utc).isoformat()}", flush=True)
+    print(f"Keys configured: {len(API_KEYS)}", flush=True)
+
     if not is_active_hours():
-        print("Outside 7AM-10PM Addis Ababa hours — skipping this run.")
+        print("Outside 7AM-10PM Addis Ababa hours — skipping this run.", flush=True)
         return
     if not API_KEYS:
-        print("No API keys configured (set TWELVEDATA_KEY_1 as a repo secret).")
+        print("No API keys configured (set TWELVEDATA_KEY_1 as a repo secret).", flush=True)
         return
 
     state = load_state()
@@ -228,6 +231,7 @@ def main():
         try:
             candles = fetch_candles(pair, key)
             if len(candles) < 30:
+                print(f"{pair}: not enough history returned", flush=True)
                 continue
             sig = generate_signal(candles)
             if sig["valid"]:
@@ -237,12 +241,16 @@ def main():
                     direction = "LONG" if sig["bias"] == "bullish" else "SHORT"
                     msg = f'{direction} · entry {sig["entry"]:.5f} · SL {sig["sl"]:.5f} · TP {sig["tp"]:.5f} · 1:{sig["rr"]:.1f} · {sig["confluence"]}/6'
                     notify(f"Clean setup: {pair}", msg)
-                    print(datetime.now(timezone.utc).isoformat(), pair, msg)
+                    print(datetime.now(timezone.utc).isoformat(), pair, msg, flush=True)
+                else:
+                    print(f"{pair}: valid setup, already alerted (no change)", flush=True)
             else:
                 state[pair] = None
+                print(f"{pair}: no clean setup right now (WAIT)", flush=True)
         except Exception as e:
-            print(datetime.now(timezone.utc).isoformat(), "error scanning", pair, "-", e)
+            print(datetime.now(timezone.utc).isoformat(), "error scanning", pair, "-", e, flush=True)
     save_state(state)
+    print("Scanner finished.", flush=True)
 
 if __name__ == "__main__":
     main()
