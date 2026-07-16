@@ -175,17 +175,21 @@ def generate_signal(candles):
         sl = max(entry_zone["top"], sweep_level if sweep_level is not None else entry_zone["top"]) + buf
 
     risk = abs(entry - sl) or price * 0.001
+    MIN_RR = 2
     if bias == "bullish":
         opp = sorted([s for s in swings if s["type"] == "high" and s["price"] > price], key=lambda s: abs(s["price"]-price))
     else:
         opp = sorted([s for s in swings if s["type"] == "low"  and s["price"] < price], key=lambda s: abs(s["price"]-price))
 
-    if opp:
-        tp = opp[0]["price"]  # nearest real liquidity pool — no artificial R:R floor
-        confluences.append("real liquidity target")
-    else:
-        tp = entry + risk*2 if bias == "bullish" else entry - risk*2
-        confluences.append("default 1:2 target (no clear liquidity pool)")
+    tp = None
+    for s in opp:
+        if abs(s["price"] - entry) / risk >= MIN_RR:
+            tp = s["price"]
+            confluences.append("real liquidity target clearing 1:2+")
+            break
+    if tp is None:
+        tp = entry + risk*MIN_RR if bias == "bullish" else entry - risk*MIN_RR
+        confluences.append("no real target cleared 1:2 — extended synthetically, manage manually")
 
     rr = abs(tp - entry) / (risk or 1)
     return {"valid": True, "bias": bias, "entry": entry, "sl": sl, "tp": tp, "rr": rr, "confluence": len(confluences)}
