@@ -884,20 +884,22 @@ function generateSignal(candles){
     : Math.max(entryZone.top, sweepLevel ?? entryZone.top) + tightBuffer;
 
   const risk = Math.abs(entry-sl) || currentPrice*0.001;
+  const MIN_RR = 2;
 
-  // Target the real next liquidity pool in this direction — no artificial reward stretching.
+  // Find the nearest REAL liquidity pool that clears 1:2 — only extend synthetically if none qualify.
   const oppSwings = (bias==='bullish'
     ? swings.filter(s=>s.type==='high' && s.price>currentPrice)
     : swings.filter(s=>s.type==='low'  && s.price<currentPrice)
   ).sort((a,b)=> Math.abs(a.price-currentPrice) - Math.abs(b.price-currentPrice));
 
-  let tp;
-  if(oppSwings.length){
-    tp = oppSwings[0].price;
-    confluences.push('Take-profit targets the next real liquidity pool in this direction');
-  } else {
-    tp = bias==='bullish' ? entry + risk*2 : entry - risk*2;
-    confluences.push('No clear liquidity pool ahead yet — using a default 1:2 target; manage this one manually');
+  let tp = null;
+  for(const s of oppSwings){
+    const reward = Math.abs(s.price-entry);
+    if(reward/risk >= MIN_RR){ tp = s.price; confluences.push('Real liquidity target clearing 1:2+'); break; }
+  }
+  if(tp === null){
+    tp = bias==='bullish' ? entry + risk*MIN_RR : entry - risk*MIN_RR;
+    confluences.push('No real target cleared 1:2 — extended synthetically; manage this one manually');
   }
 
   const reward = Math.abs(tp-entry);
