@@ -860,13 +860,19 @@ function generateSignal(candles){
   const displayObs = relevantOBs.slice(-2);
   const displayFvgs = relevantFVGs.slice(-2);
 
+  const atrNow = avgRange(candles, candles.length-1) || currentPrice*0.0015;
+  const maxReach = atrNow * 3; // if even the nearest zone is farther than this, price is unlikely to reach it
+  const zoneDist = z => Math.abs(((z.top+z.bottom)/2) - currentPrice);
+
   let entryZone=null, zoneKind=null;
-  if(relevantOBs.length){ entryZone = relevantOBs[relevantOBs.length-1]; zoneKind='order block'; confluences.push('There\'s an untouched zone where big orders likely sit, matching this direction'); }
-  else if(relevantFVGs.length){ entryZone = relevantFVGs[relevantFVGs.length-1]; zoneKind='fair value gap'; confluences.push('There\'s a price gap nearby that often gets revisited, matching this direction'); }
+  const nearestOB  = relevantOBs.length  ? [...relevantOBs].sort((a,b)=>zoneDist(a)-zoneDist(b))[0]  : null;
+  const nearestFVG = relevantFVGs.length ? [...relevantFVGs].sort((a,b)=>zoneDist(a)-zoneDist(b))[0] : null;
+  if(nearestOB && zoneDist(nearestOB) <= maxReach){ entryZone = nearestOB; zoneKind='order block'; confluences.push('There\'s an untouched, reachable zone where big orders likely sit, matching this direction'); }
+  else if(nearestFVG && zoneDist(nearestFVG) <= maxReach){ entryZone = nearestFVG; zoneKind='fair value gap'; confluences.push('There\'s a reachable price gap nearby that often gets revisited, matching this direction'); }
 
   if(!entryZone || bias==='neutral'){
     return { bias:'neutral', valid:false, currentPrice, confluences, obs:displayObs, fvgs:displayFvgs,
-      reasoning:['Price action isn\'t clearly trending one way right now, or there\'s no clean zone lined up to enter from.','It\'s better to wait for a clearer setup than force a trade here.'] };
+      reasoning:['Price action isn\'t clearly trending one way right now, or the only zones lined up are too far from price to realistically reach.','It\'s better to wait for a clearer, reachable setup than force a trade here.'] };
   }
 
   if(confluences.length < 3){
@@ -922,14 +928,18 @@ function computeBiasForCandles(candles){
 }
 function augmentWithTopDown(sig, higherData, srLevels){
   if(!sig || !sig.valid) return sig;
-  sig.maxPossible = 8;
   const dailyBias = higherData ? computeBiasForCandles(higherData['1day']) : null;
   const h4Bias = higherData ? computeBiasForCandles(higherData['4h']) : null;
 
+  if(dailyBias && dailyBias !== 'neutral' && dailyBias !== sig.bias){
+    // Hard reject — this was the main source of losses, no longer just a warning.
+    return { bias:'neutral', valid:false, currentPrice: sig.currentPrice, confluences: sig.confluences, obs: sig.obs, fvgs: sig.fvgs,
+      reasoning:['This setup goes against the daily trend, so it\'s rejected rather than just flagged.','Waiting for the entry-timeframe direction to line up with the daily trend gives a real edge here.'] };
+  }
+
+  sig.maxPossible = 8;
   if(dailyBias && h4Bias && dailyBias === sig.bias && h4Bias === sig.bias){
     sig.confluences.push('Daily and 4H trend both agree with this direction — full top-down alignment');
-  } else if(dailyBias && dailyBias !== 'neutral' && dailyBias !== sig.bias){
-    sig.warnings.push('This goes against the daily trend — treat with extra caution, it may be counter-trend');
   }
 
   const nearLevel = (srLevels||[]).some(lvl => Math.abs(lvl.price - sig.entry) / sig.entry < 0.002);
@@ -1018,13 +1028,13 @@ async function runAnalysis(){
     const candles = await fetchCandles(pair, state.timeframe);
     if(candles.length < 30) throw new Error('Not enough candle history returned to analyze reliably.');
 
-    const sig = generateSignal(candles);
+    let sig = generateSignal(candles);
     let srLevels = [];
     let higherData = null;
     try{
       higherData = await getHigherTFCandles(pair, state.timeframe, candles);
       srLevels = computeSRLevels(higherData);
-      augmentWithTopDown(sig, higherData, srLevels);
+      sig = augmentWithTopDown(sig, higherData, srLevels);
     }catch(e){ /* S/R + top-down overlay is best-effort; don't block the main signal on it */ }
 
     if(pair !== state.pair) return; // the rotation moved on while this was in flight — discard instead of showing/logging a stale mismatch
