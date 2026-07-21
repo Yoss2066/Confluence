@@ -23,9 +23,9 @@ def next_key(i):
     if not API_KEYS: return None
     return API_KEYS[i % len(API_KEYS)]
 
-def fetch_candles(pair, key):
+def fetch_candles(pair, key, interval=None):
     url = "https://api.twelvedata.com/time_series?" + urllib.parse.urlencode({
-        "symbol": pair, "interval": INTERVAL, "outputsize": 300, "apikey": key
+        "symbol": pair, "interval": interval or INTERVAL, "outputsize": 300, "apikey": key
     })
     with urllib.request.urlopen(url, timeout=20) as r:
         data = json.loads(r.read().decode())
@@ -127,7 +127,7 @@ def is_mitigated(candles, zone):
         if c["low"] <= zone["top"] and c["high"] >= zone["bottom"]: return True
     return False
 
-def generate_signal(candles):
+def generate_signal(candles, daily_bias=None):
     swings = find_swings(candles)
     structure_events = label_structure(swings)
     shift = detect_shift(candles, swings)
@@ -158,12 +158,29 @@ def generate_signal(candles):
     relevant_obs  = [o for o in unmitigated_obs  if o["type"] == bias]
     relevant_fvgs = [f for f in unmitigated_fvgs if f["type"] == bias]
 
+    atr_now = avg_range(candles, len(candles)-1) or price * 0.0015
+    max_reach = atr_now * 3  # if even the nearest zone is farther than this, price is unlikely to reach it
+
+    def zone_distance(z):
+        mid = (z["top"] + z["bottom"]) / 2
+        return abs(mid - price)
+
     entry_zone = None
-    if relevant_obs:  entry_zone = relevant_obs[-1];  confluences.append("unmitigated OB")
-    elif relevant_fvgs: entry_zone = relevant_fvgs[-1]; confluences.append("unmitigated FVG")
+    zone_kind = None
+    # Prefer the nearest OB if one exists within reach; else nearest FVG within reach.
+    nearest_ob  = sorted(relevant_obs, key=zone_distance)[0] if relevant_obs else None
+    nearest_fvg = sorted(relevant_fvgs, key=zone_distance)[0] if relevant_fvgs else None
+    if nearest_ob and zone_distance(nearest_ob) <= max_reach:
+        entry_zone = nearest_ob; zone_kind = "OB"; confluences.append("unmitigated OB within reach")
+    elif nearest_fvg and zone_distance(nearest_fvg) <= max_reach:
+        entry_zone = nearest_fvg; zone_kind = "FVG"; confluences.append("unmitigated FVG within reach")
 
     if not entry_zone or bias == "neutral" or len(confluences) < MIN_CONFLUENCE:
         return {"valid": False}
+
+    # Hard reject if this goes against the daily trend — this was the main source of losses.
+    if daily_bias and daily_bias != "neutral" and daily_bias != bias:
+        return {"valid": False, "rejected_reason": "counter to daily trend"}
 
     entry = entry_zone["top"] if bias == "bullish" else entry_zone["bottom"]
     atr = avg_range(candles, len(candles)-1) or price * 0.0015
@@ -218,6 +235,35 @@ def load_state():
 def save_state(state):
     with open(STATE_FILE, "w") as f: json.dump(state, f)
 
+def compute_bias(candles):
+    if not candles or len(candles) < 15:
+        return None
+    swings = find_swings(candles)
+    events = label_structure(swings)
+    recent = [e["label"] for e in events[-4:]]
+    bull = sum(1 for l in recent if l in ("HH", "HL"))
+    bear = sum(1 for l in recent if l in ("LH", "LL"))
+    if bull > bear: return "bullish"
+    if bear > bull: return "bearish"
+    return "neutral"
+
+DAILY_CACHE_HOURS = 4
+
+def get_daily_bias(pair, key, state):
+    cache = state.setdefault("daily_bias_cache", {})
+    entry = cache.get(pair)
+    now = datetime.now(timezone.utc).timestamp()
+    if entry and (now - entry.get("ts", 0)) < DAILY_CACHE_HOURS * 3600:
+        return entry.get("bias")
+    try:
+        daily_candles = fetch_candles(pair, key, interval="1day")
+        bias = compute_bias(daily_candles)
+        cache[pair] = {"bias": bias, "ts": now}
+        return bias
+    except Exception as e:
+        print(f"{pair}: could not fetch daily bias ({e}) — skipping trend filter this run", flush=True)
+        return entry.get("bias") if entry else None
+
 def main():
     print(f"Scanner started at {datetime.now(timezone.utc).isoformat()}", flush=True)
     print(f"Keys configured: {len(API_KEYS)}", flush=True)
@@ -237,7 +283,8 @@ def main():
             if len(candles) < 30:
                 print(f"{pair}: not enough history returned", flush=True)
                 continue
-            sig = generate_signal(candles)
+            daily_bias = get_daily_bias(pair, key, state)
+            sig = generate_signal(candles, daily_bias=daily_bias)
             if sig["valid"]:
                 signature = f'{sig["bias"]}-{round(sig["entry"], 6)}'
                 if state.get(pair) != signature:
