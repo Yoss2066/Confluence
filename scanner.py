@@ -3,7 +3,7 @@ Confluence Scanner — runs on GitHub Actions, completely independent of your
 phone or browser. Checks all 7 pairs on a schedule and sends a push
 notification via ntfy.sh the moment a clean setup appears.
 """
-import json, os, urllib.request, urllib.parse
+import json, os, time, urllib.request, urllib.parse
 from datetime import datetime, timezone
 
 PAIRS = ["XAU/USD","GBP/USD","EUR/USD","USD/JPY","AUD/USD","GBP/JPY","NZD/USD"]
@@ -23,12 +23,19 @@ def next_key(i):
     if not API_KEYS: return None
     return API_KEYS[i % len(API_KEYS)]
 
+API_CALL_DELAY = 8  # seconds between calls — free tier allows 8 req/min
+
 def fetch_candles(pair, key, interval=None):
     url = "https://api.twelvedata.com/time_series?" + urllib.parse.urlencode({
-        "symbol": pair, "interval": interval or INTERVAL, "outputsize": 300, "apikey": key
+        "symbol": pair, "interval": interval or INTERVAL, "outputsize": 100, "apikey": key
     })
-    with urllib.request.urlopen(url, timeout=20) as r:
-        data = json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            data = json.loads(r.read().decode())
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Network error fetching {pair}: {e}")
+    finally:
+        time.sleep(API_CALL_DELAY)  # always wait, even on error
     if "values" not in data:
         raise RuntimeError(data.get("message", "no data returned"))
     candles = [{
@@ -247,7 +254,7 @@ def compute_bias(candles):
     if bear > bull: return "bearish"
     return "neutral"
 
-DAILY_CACHE_HOURS = 4
+DAILY_CACHE_HOURS = 12  # only refresh daily bias twice a day to save API calls
 
 def get_daily_bias(pair, key, state):
     cache = state.setdefault("daily_bias_cache", {})
@@ -265,6 +272,7 @@ def get_daily_bias(pair, key, state):
         return entry.get("bias") if entry else None
 
 def main():
+    start_time = time.time()
     print(f"Scanner started at {datetime.now(timezone.utc).isoformat()}", flush=True)
     print(f"Keys configured: {len(API_KEYS)}", flush=True)
 
@@ -277,6 +285,9 @@ def main():
 
     state = load_state()
     for i, pair in enumerate(PAIRS):
+        if time.time() - start_time > 720:  # 12 min safety cutoff — well under 15min limit
+            print("Approaching time limit — stopping early to avoid cancellation.", flush=True)
+            break
         key = next_key(i)
         try:
             candles = fetch_candles(pair, key)
@@ -301,7 +312,8 @@ def main():
         except Exception as e:
             print(datetime.now(timezone.utc).isoformat(), "error scanning", pair, "-", e, flush=True)
     save_state(state)
-    print("Scanner finished.", flush=True)
+    elapsed = time.time() - start_time
+    print(f"Scanner finished in {elapsed:.1f}s.", flush=True)
 
 if __name__ == "__main__":
     main()
